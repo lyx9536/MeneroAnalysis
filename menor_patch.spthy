@@ -1,0 +1,245 @@
+/*
+======================================
+
+Authors: 	Yuxin Li
+Date: 	2023/12/17  
+
+*/
+
+theory MeneroSecurity
+begin
+builtins: hashing
+
+// 假设G是一个已知的椭圆曲线参数，Hs和Hp是哈希函数。
+// A = pk(a)   <===>   A = a*G
+// deskey      <===>   P = Hs(rA)*G + B
+// tx          <===>   tx的参数包括本次交易的一次性地址、随机产生的交易私钥、环签名，、环签名产生的密钥像。
+// deskeyver   <===>   如果 a*R = a*(r*G) = r*A，交易的接收者验证并构造P' = Hs(aR)*G + B = P
+// spendkey    <===>   用户一旦获得utxo，他可以用x = Hs(rA) + b消费，如果他知道（a,b);
+// rsign       <===>   用户至少知道一个私钥x = Hs(aR) + b,utxo_P = x*G,一个公钥集合含有n个公钥，攻击者无法知道Pi，
+//                     rsign(x, Pi, P1...Pn, m) 包含n + 3 参数, 本文使 n = 2
+// publicPKS   <===>   简化作用的析构函数
+functions: pk/1, deskey/3, tx/4, R/1, deskeyver/3,
+           true/0, spendkey/3, rsign/5, publicPKS/1,
+           fst/1,snd/1,gettx1/1,gettx2/1,gettx3/1,gettx4/1,
+           verringsig1/2,verringsig2/2
+
+equations:
+    // 给定deskey和R，可以用占密钥对一半的a来验证utxo是否属于自己
+    
+    deskeyver(deskey(r, pk(a), pk(b)), a, R(r)) = true,
+    publicPKS(rsign(x, P, p1, p2, m)) = <p1, p2>,
+    verringsig1(m,rsign(spendkey(a, R(r), b) , deskey(r, pk(a), pk(b)), deskey(r, pk(a), pk(b)), otherdk, m)) = true,
+    verringsig2(m,rsign(spendkey(a, R(r), b) , deskey(r, pk(a), pk(b)), otherdk,deskey(r, pk(a), pk(b)), m))=true,
+    
+    gettx1(tx(newdk,randomkey,txsign,keyimage))=newdk,
+    gettx2(tx(newdk,randomkey,txsign,keyimage))=randomkey,
+    gettx3(tx(newdk,randomkey,txsign,keyimage))=txsign,
+    gettx4(tx(newdk,randomkey,txsign,keyimage))=keyimage,
+    
+    fst(<x.1, x.2>) = x.1, snd(<x.1, x.2>) = x.2
+
+
+restriction DestinationKey_verify_true:
+  " All x y #i. Eq(x, y) @#i ==> x = y "
+
+restriction Diff_deskey:
+  " All x y #i. Neq(x, y) @#i ==> (¬(x = y)) "
+
+restriction Only_one_u1:
+  " All #i #j. Only_one_u1() @#i & Only_one_u1() @#j ==> #i = #j "
+
+restriction Only_one_u2:
+  " All #i #j. Only_one_u2() @#i & Only_one_u2() @#j ==> #i = #j "
+
+restriction Only_one_r2:
+  " All #i #j. Only_one_r2() @#i & Only_one_r2() @#j ==> #i = #j "
+
+restriction Only_one_r:
+  " All #i #j. Only_one_r() @#i & Only_one_r() @#j ==> #i = #j "
+
+restriction Not_used:
+ "All x #i. Not_used(x) @#i  ==>not (Ex #j. (Used(x)@#j)& (#j<#i))"
+
+restriction Have_Blockin:
+ "All x #i . Have_Blockin(x) @#i  ==>Ex randomkey txsign keyimage #j.(Blockin(tx(x,randomkey,txsign,keyimage))@#j)& (#j<#i)"
+
+
+
+restriction Haveused:
+"
+All T0 #i. Haveused(T0)@#i ==> (Ex #j.(Used(T0)@j & #j<#i ) ) 
+"
+
+restriction Notrec:
+"
+All payment #i. Notrec(payment)@#i ==> not(Ex #j.(Paymentin(payment)@j & #j<#i ) ) 
+"
+restriction Rec:
+"
+All payment #i. Rec(payment)@#i ==> (Ex #j.(Paymentin(payment)@j & #j<#i ) ) 
+"
+
+// rule
+
+/*
+====================================================
+=                                                  =
+=               Generate user                      =
+=                                                  =
+====================================================
+*/
+// private user key
+//用户u1
+rule Generate_user1_to_be_observed:
+    [ Fr(~a), Fr(~b) ]
+  --[Only_one_u1()]->
+    [ !SkPair(<~a, ~b, 'u1'>), !PkPair(<pk(~a), pk(~b), 'u1'>) ]
+
+//用户u2
+// generate common user
+rule Generate_user2:
+    // private user key
+    [ Fr(~a), Fr(~b) ]
+  --[Only_one_u2()]->
+    [ !SkPair(<~a, ~b, 'u2'>), !PkPair(<pk(~a), pk(~b), 'u2'>) ]
+
+//用户r
+rule Generate_recepient:
+    // private recepient key
+    [ Fr(~a), Fr(~b) ]
+  --[Only_one_r()]->
+    [ !SkPair(<~a, ~b, 'r'>), !PkPair(<pk(~a), pk(~b), 'r'>) ]
+
+
+rule Get_receive_address:
+    // public a user address
+    [ !PkPair(<pka, pkb, nonce>) ]
+  -->
+    [ Out( <pka, pkb, nonce> ) ]
+
+
+
+/*
+====================================================
+=                                                  =
+=                  Get utxo                        =
+=                                                  =
+====================================================
+*/
+
+
+//先给用户发送一笔交易，代替tx/4项函数，收到这笔交易的用户A会生成一个真的环签名和utxo，
+
+rule Generate_first_tx_to_u1:
+    [ !PkPair(<pka, pkb, 'u1'>), Fr(~r), Fr(~fakesign),Fr(~fakeimage)]
+  --[Blockin(tx(deskey(~r, pka, pkb),R(~r),~fakesign,~fakeimage))]->
+    [ Firsttx(deskey(~r, pka, pkb), R(~r), ~fakesign,~fakeimage,'u1')]
+
+rule Generate_first_tx_to_u2:
+    [ !PkPair(<pka, pkb, 'u2'>), Fr(~r), Fr(~fakesign),Fr(~fakeimage)]
+  --[Blockin(tx(deskey(~r, pka, pkb),R(~r),~fakesign,~fakeimage))]->
+    [ Firsttx(deskey(~r, pka, pkb), R(~r), ~fakesign,~fakeimage,'u2') ]
+
+// U1和u2验证utxo
+rule Recepient_verify_each_output:
+    let mytx = tx(dk, Rpk, fakesign,fakeimage) in
+    [ Firsttx(dk, Rpk, fakesign,fakeimage ,id), !SkPair(<a, b, id>) ]
+  --[ Eq(deskeyver(dk, a, Rpk), true) ]->
+    [ ReceiveTransaction(id, mytx), Out(mytx) ]
+
+
+    // 首先使用let申明了用户r接收交易的一次性地址newdk；
+    // 前置条件是用户u1收到其他用户给自己发送的交易，
+    // 是u1向r转账的前置条件；
+    // Neq强调了在其他用户向u1转账时地址dk的唯一性，SendOut表示用户u1向r发送交易的动作，两者对安全属性的构建和约束的构建产生作用；
+    // 后置事实描述了以上行为发生后的系统状态，即向一次性地址newdk发送消息。
+
+rule Generate_signature_and_spend_u1:
+let newdk=deskey(~r, pka, pkb ) in
+    [ In( <pka, pkb, 'r'> ),
+      ReceiveTransaction('u1', tx(dk, oldR, oldsign,oldimage)),
+      In(tx(otherdk, otherR, othersign,otherimage)),
+      !SkPair(<a, b, 'u1'>), Fr(~r)
+    ]
+  --[Neq(dk, otherdk),SendOut(tx(newdk, R(~r) ,rsign(spendkey(a, oldR, b) , dk, dk, otherdk, newdk),h(spendkey(a, oldR, b))))]->
+    [ Out(<$x,tx(newdk, R(~r),rsign(spendkey(a, oldR, b) , dk, dk, otherdk, newdk),h(spendkey(a, oldR, b)))>),
+      Sended( tx(newdk, R(~r) ,rsign(spendkey(a, oldR, b) , dk, dk, otherdk, newdk),h(spendkey(a, oldR, b))) )]
+
+
+/*
+========================================================
+=                                                      =
+=              Menero blockchain rule                =
+=                                                      =
+========================================================
+*/
+
+rule Menero_network_ok:
+    [In(<$x,payment>)]
+    --[Not_used(gettx4(payment)),Have_Blockin(fst(publicPKS(gettx3(payment)))),Have_Blockin(snd(publicPKS(gettx3(payment))))]->
+    [Wait_checksign(payment)]
+
+rule check_sign1:
+[Wait_checksign(payment)]
+--[Paymentin(payment),Eq(verringsig1(gettx1(x),gettx3(x)),true)]->
+[Wait_blockin(payment)]
+
+rule check_sign2:
+[Wait_checksign(payment)]
+--[Paymentin(payment),Eq(verringsig2(gettx1(x),gettx3(x)),true)]->
+[Wait_blockin(payment)]
+
+
+rule bitcoin_network_notok2:
+    [In(<$x,payment>)]
+    --[Haveused(gettx4(payment))]->
+    []  
+    
+
+rule bitcoin_network_blockin:
+ [Wait_blockin(payment)]
+--[Blockin(payment),Used(gettx4(payment)),Not_used(gettx4(payment))]->
+ [!Trans_blockin(payment)]
+ 
+
+
+ rule sendcheck_successA:
+ [Sended(payment)]
+ --[Rec(payment)]->
+ [Waitblockin(payment)]
+
+//更改了交易失败时的规则，改为发送一笔转给自己的交易
+ rule sendcheck_failA:
+ [Sended(tx(newdk, R(~r),rsign(spendkey(a, oldR, b) , dk, dk, otherdk, newdk),h(spendkey(a, oldR, b)))),!SkPair(<a, b, 'u1'>), Fr(~r)]
+ --[Notrec(tx(newdk, R(~r),rsign(spendkey(a, oldR, b) , dk, dk, otherdk, newdk),h(spendkey(a, oldR, b))))]->
+ [Out(<$x,tx(deskey(~r, pk(a), pk(b) ), R(~r),rsign(spendkey(a, oldR, b) , dk, dk, otherdk, deskey(~r, pk(a), pk(b) )),h(spendkey(a, oldR, b)))>)
+ ,Sended_2(tx(deskey(~r, pk(a), pk(b) ), R(~r),rsign(spendkey(a, oldR, b) , dk, dk, otherdk, deskey(~r, pk(a), pk(b) )),h(spendkey(a, oldR, b)))),Fail(tx(newdk, R(~r),rsign(spendkey(a, oldR, b) , dk, dk, otherdk, newdk),h(spendkey(a, oldR, b))))]
+
+rule check_new:
+[Sended_2(newpayment),Fail(payment),!Trans_blockin(newpayment)]
+--[Pay_fail(payment)]->
+[]
+
+
+rule checkrelust_okA:
+    [Waitblockin(payment),!Trans_blockin(payment)]
+    --[Pay_success(payment)]->
+    []
+
+
+
+//建模交易一致性
+lemma Menero_payment_Consensus:
+all-traces"
+   ( All payment #i . (Blockin(payment)@#i)
+    ==>
+    not (Ex #j.(Pay_fail(payment)@#j)) )
+
+"
+
+
+
+
+
+end
